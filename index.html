@@ -488,7 +488,7 @@ input[type=color]{
 <div class="modal hidden" id="exportModal">
   <div class="modal-box">
     <h3 id="expTitle">Rendering your video…</h3>
-    <p id="expDesc">Recording the real edited output with MediaRecorder. Keep this tab visible.</p>
+      <p id="expDesc">Rendering your video. The download starts automatically when it is ready.</p>
     <div class="bar"><i id="expBar"></i></div>
     <div id="expStatus">0%</div>
     <a id="dlLink" class="btn primary hidden" download="clipforge-export.webm">⬇ Download Video</a>
@@ -1134,7 +1134,7 @@ function loop(ts) {
   const dt = lastTs ? Math.min(0.2, (ts - lastTs) / 1000) : 0;
   lastTs = ts;
 
-  if (isPlaying) {
+  if (isPlaying && !exporting) {
     tl += dt;
     const total = totalDuration();
     if (tl >= total) {
@@ -1773,6 +1773,7 @@ function drawFrame(ctx, cw, ch) {
 }
 
 let exporting = false;
+let lastExportUrl = null;
 
 $('btnExport').addEventListener('click', () => {
   if (exporting) return;
@@ -1782,6 +1783,27 @@ $('btnExport').addEventListener('click', () => {
 $('btnCloseExport').addEventListener('click', () => {
   exportModal.classList.add('hidden');
 });
+
+function prepareDownload(blob, filename) {
+  if (lastExportUrl) {
+    try { URL.revokeObjectURL(lastExportUrl); } catch (e) { }
+  }
+
+  lastExportUrl = URL.createObjectURL(blob);
+  dlLink.href = lastExportUrl;
+  dlLink.download = filename;
+  dlLink.textContent = '⬇ Download Video (' + (blob.size / 1048576).toFixed(1) + ' MB)';
+  dlLink.classList.remove('hidden');
+
+  // Keep the visible link as a fallback, but start the single download immediately.
+  const autoLink = document.createElement('a');
+  autoLink.href = lastExportUrl;
+  autoLink.download = filename;
+  autoLink.style.display = 'none';
+  document.body.appendChild(autoLink);
+  try { autoLink.click(); } catch (e) { console.warn('Automatic download was blocked', e); }
+  setTimeout(() => autoLink.remove(), 0);
+}
 
 async function waitForReady(timeout) {
   const t0 = performance.now();
@@ -1810,7 +1832,7 @@ async function startExport() {
 
   exportModal.classList.remove('hidden');
   expTitle.textContent = 'Rendering your video…';
-  expDesc.textContent = 'Recording the real edited output with MediaRecorder. Keep this tab visible.';
+    expDesc.textContent = 'Rendering your video. The download starts automatically when it is ready.';
   expBar.style.width = '0%';
   expStatus.textContent = 'Preparing…';
   dlLink.classList.add('hidden');
@@ -1856,10 +1878,16 @@ async function startExport() {
     const chunks = [];
     rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
 
-    const finished = new Promise(resolve => {
+    let rejectRecording;
+    const finished = new Promise((resolve, reject) => {
+      rejectRecording = reject;
       rec.onstop = () => {
-        const type = (mime || 'video/webm').split(';')[0];
+        const type = (rec.mimeType || mime || (chunks[0] && chunks[0].type) || 'video/webm').split(';')[0];
         resolve(new Blob(chunks, { type }));
+      };
+      rec.onerror = event => {
+        const detail = event && event.error && event.error.message ? event.error.message : 'MediaRecorder failed.';
+        reject(new Error(detail));
       };
     });
 
@@ -1870,8 +1898,7 @@ async function startExport() {
     syncAudioClips();
     renderOverlays();
     updatePlayhead();
-    await new Promise(r => setTimeout(r, 250));
-    await waitForReady(6000);
+    await waitForReady(3000);
 
     expStatus.textContent = 'Recording…';
     rec.start(100);
@@ -1881,24 +1908,36 @@ async function startExport() {
     syncPreview(true);
 
     let stopped = false;
-    const finish = async () => {
+    const finish = () => {
       if (stopped) return;
       stopped = true;
       isPlaying = false;
       updatePlayBtn();
       videoEl.pause();
       state.audioClips.forEach(c => { const m = getMedia(c.mediaId); if (m && m.el) m.el.pause(); });
-      await new Promise(r => setTimeout(r, 350));
-      try { if (rec.state !== 'inactive') rec.stop(); } catch (e) { }
+      try {
+        if (rec.state === 'recording') rec.requestData();
+      } catch (e) { }
+      try {
+        if (rec.state !== 'inactive') rec.stop();
+      } catch (e) {
+        rejectRecording(e);
+      }
     };
 
-    const renderLoop = () => {
+    // Use an independent wall clock. Frame drops no longer make export take longer
+    // than the actual timeline duration.
+    const exportStartedAt = performance.now();
+    const renderLoop = now => {
       if (stopped) return;
+      tl = Math.min(total, Math.max(0, (now - exportStartedAt) / 1000));
+      syncPreview(false);
+      syncAudioClips();
       try { drawFrame(ctx, cw, ch); } catch (e) { console.warn(e); }
       const p = Math.min(1, tl / total);
       expBar.style.width = (p * 100).toFixed(1) + '%';
       expStatus.textContent = Math.round(p * 100) + '%  ·  ' + fmt(tl) + ' / ' + fmt(total);
-      if (tl >= total - 0.02) { finish(); return; }
+      if (tl >= total - 0.001) { finish(); return; }
       requestAnimationFrame(renderLoop);
     };
     requestAnimationFrame(renderLoop);
@@ -1915,15 +1954,11 @@ async function startExport() {
       return;
     }
 
-    const url = URL.createObjectURL(blob);
     const ext = blob.type.includes('mp4') ? 'mp4' : 'webm';
-    dlLink.href = url;
-    dlLink.download = 'clipforge-export.' + ext;
-    dlLink.textContent = '⬇ Download Video (' + (blob.size / 1048576).toFixed(1) + ' MB)';
-    dlLink.classList.remove('hidden');
+    prepareDownload(blob, 'clipforge-export.' + ext);
     btnCloseExport.classList.remove('hidden');
     expTitle.textContent = 'Export complete';
-    expDesc.textContent = 'Your edited video was rendered locally. Download it below.';
+    expDesc.textContent = 'Download started automatically. If it was blocked, use the button below.';
     expBar.style.width = '100%';
     expStatus.textContent = '100%';
 
