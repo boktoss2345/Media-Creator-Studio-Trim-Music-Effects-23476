@@ -1822,7 +1822,13 @@ async function startExport() {
     return;
   }
   if (!state.clips.length && !state.overlays.length && !state.audioClips.length) {
-    alert('Add at least one clip to the timeline first.');
+    exportModal.classList.remove('hidden');
+    expTitle.textContent = 'Nothing to export';
+    expDesc.textContent = 'Add at least one clip to the timeline first.';
+    expBar.style.width = '0%';
+    expStatus.textContent = '';
+    dlLink.classList.add('hidden');
+    btnCloseExport.classList.remove('hidden');
     return;
   }
 
