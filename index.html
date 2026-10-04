@@ -1632,7 +1632,6 @@ function renderAudioList() {
    NEW PROJECT
    ========================================================= */
 $('btnNew').addEventListener('click', () => {
-  if (!confirm('Clear the whole project? Imported media will be removed from the editor.')) return;
   stopPlayback();
   state.media.forEach(m => {
     try { URL.revokeObjectURL(m.url); } catch (e) { }
